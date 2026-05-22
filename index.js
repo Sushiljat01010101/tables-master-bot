@@ -1,6 +1,6 @@
 // ╔══════════════════════════════════════════════════════════╗
 // ║     🧮 TABLES MASTER BOT — Advanced Telegram Bot         ║
-// ║     Webhook-based | All Features | Best UI               ║
+// ║     Webhook-based | All Features | Full Working          ║
 // ╚══════════════════════════════════════════════════════════╝
 
 const express = require("express");
@@ -10,19 +10,11 @@ const https = require("https");
 //  CONFIG — Environment variables se aata hai
 // ─────────────────────────────────────────────
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const WEBHOOK_URL = process.env.WEBHOOK_URL; // Render ka URL (e.g. https://your-app.onrender.com)
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const PORT = process.env.PORT || 3000;
 
-if (!BOT_TOKEN) {
-  console.error("❌ BOT_TOKEN environment variable set nahi hai!");
-  process.exit(1);
-}
-if (!WEBHOOK_URL) {
-  console.error("❌ WEBHOOK_URL environment variable set nahi hai!");
-  process.exit(1);
-}
-
-const API = `https://api.telegram.org/bot${BOT_TOKEN}`;
+if (!BOT_TOKEN) { console.error("❌ BOT_TOKEN set nahi hai!"); process.exit(1); }
+if (!WEBHOOK_URL) { console.error("❌ WEBHOOK_URL set nahi hai!"); process.exit(1); }
 
 // ─────────────────────────────────────────────
 //  IN-MEMORY USER STATE
@@ -33,14 +25,28 @@ function getUser(id) {
   if (!users[id]) {
     users[id] = {
       mode: null,
+      // Quiz
+      quizFixedTable: null,   // FIX: specific table ya null for random
       quizTable: null,
       quizQ: null,
+      quizAns: null,
+      // General stats
       score: 0,
       streak: 0,
       bestStreak: 0,
       total: 0,
+      // Challenge
+      challengeScore: 0,
+      challengeQ: 0,
+      challengeTotal: 10,
+      // Survival
       lives: 3,
-      history: [],
+      survivalScore: 0,       // FIX: separate survival score
+      // Speed
+      speedScore: 0,
+      speedQ: 0,
+      speedTotal: 5,
+      // Range
       currentRange: [11, 30],
       lastActive: Date.now(),
     };
@@ -105,6 +111,28 @@ function pickRandom(arr) {
 }
 
 // ─────────────────────────────────────────────
+//  QUIZ QUESTION GENERATOR  — FIX: fixedTable support
+// ─────────────────────────────────────────────
+function makeQuestion(u, fixedTable = null) {
+  const [min, max] = u.currentRange;
+  // FIX: agar fixedTable diya hai toh wahi use karo, warna range se random
+  const table = (fixedTable !== null && fixedTable >= 11 && fixedTable <= 30)
+    ? fixedTable
+    : randomInt(min, max);
+  const q = randomInt(1, 10);
+  const ans = table * q;
+
+  const wrongs = new Set();
+  while (wrongs.size < 3) {
+    const delta = pickRandom([-2, -1, 1, 2, 3, -3, 5, -5, 10, -10]);
+    const w = ans + delta * randomInt(1, 3);
+    if (w > 0 && w !== ans) wrongs.add(w);
+  }
+  const opts = [ans, ...[...wrongs]].sort(() => Math.random() - 0.5);
+  return { table, q, ans, opts };
+}
+
+// ─────────────────────────────────────────────
 //  EMOJI HELPERS
 // ─────────────────────────────────────────────
 const LEVEL_EMOJI = ["🌱", "⭐", "🔥", "💎", "👑"];
@@ -130,7 +158,12 @@ function streakMsg(s) {
   return "";
 }
 function heart(n) {
-  return "❤️".repeat(n) + "🖤".repeat(3 - n);
+  const safe = Math.max(0, Math.min(3, n));
+  return "❤️".repeat(safe) + "🖤".repeat(3 - safe);
+}
+function progressBar(pct) {
+  const filled = Math.round(pct / 10);
+  return "█".repeat(filled) + "░".repeat(10 - filled) + ` ${pct}%`;
 }
 
 // ─────────────────────────────────────────────
@@ -142,7 +175,7 @@ const MAIN_MENU = {
     [{ text: "🎯 Challenge Mode", callback_data: "mode_challenge" }, { text: "❤️ Survival Mode", callback_data: "mode_survival" }],
     [{ text: "🏃 Speed Round", callback_data: "mode_speed" }, { text: "📊 Meri Progress", callback_data: "progress" }],
     [{ text: "🎲 Random Table", callback_data: "random_table" }, { text: "📚 Practice Set", callback_data: "mode_practice" }],
-    [{ text: "🏆 Leaderboard Tips", callback_data: "tips" }, { text: "❓ Help", callback_data: "help" }],
+    [{ text: "🏆 Tips & Tricks", callback_data: "tips" }, { text: "❓ Help", callback_data: "help" }],
   ],
 };
 
@@ -170,30 +203,11 @@ function rangeKeyboard() {
   };
 }
 
-// ─────────────────────────────────────────────
-//  QUIZ QUESTION GENERATOR
-// ─────────────────────────────────────────────
-function makeQuestion(u) {
-  const [min, max] = u.currentRange;
-  const table = randomInt(min, max);
-  const q = randomInt(1, 10);
-  const ans = table * q;
-
-  const wrongs = new Set();
-  while (wrongs.size < 3) {
-    const delta = pickRandom([-2, -1, 1, 2, 3, -3, 5, -5, 10, -10]);
-    const w = ans + delta * randomInt(1, 3);
-    if (w > 0 && w !== ans) wrongs.add(w);
-  }
-  const opts = [ans, ...[...wrongs]].sort(() => Math.random() - 0.5);
-  return { table, q, ans, opts };
-}
-
 function quizKeyboard(opts, table, q) {
   const rows = [];
   for (let i = 0; i < opts.length; i += 2) {
     const row = [{ text: `${opts[i]}`, callback_data: `ans_${opts[i]}_${table}_${q}` }];
-    if (opts[i + 1]) row.push({ text: `${opts[i + 1]}`, callback_data: `ans_${opts[i + 1]}_${table}_${q}` });
+    if (opts[i + 1] !== undefined) row.push({ text: `${opts[i + 1]}`, callback_data: `ans_${opts[i + 1]}_${table}_${q}` });
     rows.push(row);
   }
   rows.push([{ text: "🏠 Menu", callback_data: "menu" }, { text: "⏭ Skip", callback_data: "skip_quiz" }]);
@@ -204,8 +218,7 @@ function quizKeyboard(opts, table, q) {
 //  MESSAGES
 // ─────────────────────────────────────────────
 function welcomeMsg(name) {
-  return `
-╔══════════════════════════╗
+  return `╔══════════════════════════╗
 ║  🧮 <b>Tables Master Bot</b>  ║
 ╚══════════════════════════╝
 
@@ -215,20 +228,18 @@ Main tumhara personal <b>Pahada</b> (Tables) teacher hoon!
 Tum <b>11 se 30 tak</b> ki tables yahan aasani se seekh sakte ho.
 
 <b>🎮 Modes available hain:</b>
-📖 <b>Learn</b> — Table dekhna & padhna
-⚡ <b>Quick Quiz</b> — MCQ questions
+📖 <b>Learn</b> — Table dekhna &amp; padhna
+⚡ <b>Quick Quiz</b> — Specific table ka MCQ
 🎯 <b>Challenge</b> — 10 sawaalon ka set
 ❤️ <b>Survival</b> — 3 lives, survive karo!
-🏃 <b>Speed Round</b> — Jaldi jawab do
+🏃 <b>Speed Round</b> — 5 sawaal jaldi jawab do
 
-Neeche menu se mode chunno 👇
-`;
+Neeche menu se mode chunno 👇`;
 }
 
 function progressMsg(u, name) {
   const acc = u.total > 0 ? Math.round((u.score / u.total) * 100) : 0;
-  return `
-📊 <b>TERI PROGRESS — ${name}</b>
+  return `📊 <b>TERI PROGRESS — ${name}</b>
 
 ${getLevelEmoji(u.score)} Level: <b>${getLevelName(u.score)}</b>
 ✅ Sahi jawab: <b>${u.score}</b>
@@ -240,13 +251,7 @@ ${getLevelEmoji(u.score)} Level: <b>${getLevelName(u.score)}</b>
 <b>Progress Bar:</b>
 ${progressBar(acc)}
 
-💡 Tip: Roz 15 min practice karo, exam crack!
-`;
-}
-
-function progressBar(pct) {
-  const filled = Math.round(pct / 10);
-  return "█".repeat(filled) + "░".repeat(10 - filled) + ` ${pct}%`;
+💡 Tip: Roz 15 min practice karo, exam crack!`;
 }
 
 // ─────────────────────────────────────────────
@@ -279,27 +284,14 @@ function getTrick(n) {
 }
 
 // ─────────────────────────────────────────────
-//  CHALLENGE Q HELPER
+//  CHALLENGE FIRST QUESTION STARTER
 // ─────────────────────────────────────────────
-async function startChallengeQ(chatId, msgId, u) {
-  u.challengeQ++;
-  if (u.challengeQ > u.challengeTotal) {
-    const pct = Math.round((u.challengeScore / u.challengeTotal) * 100);
-    const stars = pct >= 90 ? "⭐⭐⭐" : pct >= 70 ? "⭐⭐" : "⭐";
-    const text = `🎯 <b>CHALLENGE COMPLETE!</b>\n\n${stars}\nScore: <b>${u.challengeScore}/${u.challengeTotal}</b>\nAccuracy: <b>${pct}%</b>\n\n${pct >= 90 ? "🏆 Outstanding!" : pct >= 70 ? "👍 Achha kiya!" : "💪 Aur practice karo!"}`;
-    u.score += u.challengeScore;
-    u.total += u.challengeTotal;
-    u.mode = null;
-    if (msgId) {
-      await editMessage(chatId, msgId, text, { reply_markup: { inline_keyboard: [[{ text: "🔄 Again", callback_data: "mode_challenge" }, { text: "🏠 Menu", callback_data: "menu" }]] } });
-    } else {
-      await sendMessage(chatId, text, { reply_markup: { inline_keyboard: [[{ text: "🔄 Again", callback_data: "mode_challenge" }, { text: "🏠 Menu", callback_data: "menu" }]] } });
-    }
-    return;
-  }
+async function startChallengeFirst(chatId, msgId, u) {
+  u.challengeQ = 1;
+  u.challengeScore = 0;
   const { table, q, ans, opts } = makeQuestion(u);
   u.quizTable = table; u.quizQ = q; u.quizAns = ans;
-  const txt = `🎯 <b>CHALLENGE</b> — Sawaal ${u.challengeQ}/${u.challengeTotal}\n\n✅ Score: ${u.challengeScore}\n\n❓ <b>${table} × ${q} = ?</b>`;
+  const txt = `🎯 <b>CHALLENGE MODE</b>\n\nSawaal <b>1/${u.challengeTotal}</b> | ✅ Score: 0\n\n❓ <b>${table} × ${q} = ?</b>`;
   if (msgId) {
     await editMessage(chatId, msgId, txt, { reply_markup: quizKeyboard(opts, table, q) });
   } else {
@@ -311,6 +303,7 @@ async function startChallengeQ(chatId, msgId, u) {
 //  MAIN HANDLER
 // ─────────────────────────────────────────────
 async function handleUpdate(update) {
+
   // ── CALLBACK QUERY ──
   if (update.callback_query) {
     const cb = update.callback_query;
@@ -323,12 +316,15 @@ async function handleUpdate(update) {
 
     await answerCallback(cb.id);
 
+    // MENU
     if (data === "menu") {
       u.mode = null;
+      u.quizFixedTable = null;
       await editMessage(chatId, msgId, welcomeMsg(name), { reply_markup: MAIN_MENU });
       return;
     }
 
+    // PROGRESS
     if (data === "progress") {
       await editMessage(chatId, msgId, progressMsg(u, name), {
         reply_markup: { inline_keyboard: [[{ text: "🔙 Menu", callback_data: "menu" }]] },
@@ -336,43 +332,39 @@ async function handleUpdate(update) {
       return;
     }
 
+    // TIPS
     if (data === "tips") {
-      const tips = `
-🏆 <b>EXAM TIPS — Tables ke liye</b>
+      const tips = `🏆 <b>EXAM TIPS — Tables ke liye</b>
 
 1️⃣ <b>Pattern Trick (11 ki table):</b>
-   11×11=121, 11×12=132... last 2 digits badhte hain!
+   11×11=121, 11×12=132 — last 2 digits badhte hain!
 
-2️⃣ <b>Square Trick (15×15=225):</b>
-   15² = 225 (yaad rakho!)
+2️⃣ <b>Square Trick:</b>
+   15² = 225, 25² = 625 (yaad rakho!)
 
 3️⃣ <b>Reverse check:</b>
    17×13 = 13×17 — dono same!
 
 4️⃣ <b>Near-round trick:</b>
-   19×7 = 20×7 - 7 = 140-7 = 133
+   19×7 = 20×7 - 7 = 140 - 7 = 133
 
-5️⃣ <b>Daily practice:</b>
-   Roz 1 table mazboot karo
+5️⃣ <b>20+ tables ka secret:</b>
+   23×7 = 20×7 + 3×7 = 140 + 21 = 161
 
-6️⃣ <b>Speed tip:</b>
-   Tables bolte waqt rhythm banao — jaise rap!
+6️⃣ <b>Subtract trick:</b>
+   29×n = 30n - n  |  18×n = 20n - 2n
 
-7️⃣ <b>Test trick:</b>
-   Agar yaad na aaye, paas wali table se calculate karo
-
-💡 <b>Secret:</b> 20+ tables = 20×n + (table-20)×n
-Example: 23×7 = 20×7 + 3×7 = 140+21 = 161
-`;
+7️⃣ <b>Daily practice tip:</b>
+   Roz 1 table ko 5 baar likhkar yaad karo!`;
       await editMessage(chatId, msgId, tips, {
         reply_markup: { inline_keyboard: [[{ text: "⚡ Quiz Try Karo", callback_data: "mode_quiz" }, { text: "🔙 Menu", callback_data: "menu" }]] },
       });
       return;
     }
 
+    // HELP
     if (data === "help") {
-      const help = `
-❓ <b>BOT HELP</b>
+      const help = `❓ <b>BOT HELP</b>
 
 <b>Commands:</b>
 /start — Bot shuru karo
@@ -383,30 +375,27 @@ Example: 23×7 = 20×7 + 3×7 = 140+21 = 161
 /reset — Progress reset
 
 <b>Modes:</b>
-📖 Learn — Pura table padho
-⚡ Quiz — MCQ format
-🎯 Challenge — 10 sawaal ka set
-❤️ Survival — 3 lives
-🏃 Speed — Fast answers
+📖 <b>Learn</b> — Pura table padho
+⚡ <b>Quiz</b> — Specific table ka MCQ (table fixed rehti hai!)
+🎯 <b>Challenge</b> — 10 sawaal, score banao
+❤️ <b>Survival</b> — 3 galtiyan, survive karo
+🏃 <b>Speed</b> — 5 sawaal jaldi jawab do
 
-<b>Range Filter:</b>
-Sirf kuch tables practice karo (e.g. 11-15)
-
-Bot banaya gaya hai aapki padhai ke liye! 📚
-`;
+<b>Range:</b> Challenge/Survival/Speed ke liye range chunna hoga`;
       await editMessage(chatId, msgId, help, {
         reply_markup: { inline_keyboard: [[{ text: "🔙 Menu", callback_data: "menu" }]] },
       });
       return;
     }
 
+    // RANDOM TABLE
     if (data === "random_table") {
       const n = randomInt(11, 30);
-      const text = `🎲 <b>Random Table: ${n}</b>\n\n<code>${getTable(n)}</code>\n\n✨ Isko yaad karo, phir quiz try karo!`;
+      const text = `🎲 <b>Random Table: ${n}</b>\n\n<code>${getTable(n)}</code>\n\n💡 <b>Trick:</b> ${getTrick(n)}\n\n✨ Isko yaad karo, phir quiz try karo!`;
       await editMessage(chatId, msgId, text, {
         reply_markup: {
           inline_keyboard: [
-            [{ text: "⚡ Isi table ka Quiz", callback_data: `quiz_${n}` }, { text: "🎲 Aur random", callback_data: "random_table" }],
+            [{ text: `⚡ Table ${n} ka Quiz`, callback_data: `quiz_${n}` }, { text: "🎲 Aur random", callback_data: "random_table" }],
             [{ text: "🔙 Menu", callback_data: "menu" }],
           ],
         },
@@ -414,32 +403,37 @@ Bot banaya gaya hai aapki padhai ke liye! 📚
       return;
     }
 
+    // MODE SELECTORS
     if (data === "mode_learn") {
       await editMessage(chatId, msgId, "📖 <b>Konsi table dekhni hai?</b>\n\nEk chunno:", { reply_markup: tableSelectKeyboard("learn") });
       return;
     }
+
     if (data === "mode_quiz") {
-      await editMessage(chatId, msgId, "⚡ <b>Konsi table ka quiz?</b>\n\nEk chunno ya Random:", { reply_markup: tableSelectKeyboard("quiz") });
+      await editMessage(chatId, msgId, "⚡ <b>Konsi table ka quiz khelna hai?</b>\n\nEk specific table chunne par sirf <u>usi table ke sawaal</u> aayenge!", { reply_markup: tableSelectKeyboard("quiz") });
       return;
     }
+
     if (data === "mode_challenge") {
-      await editMessage(chatId, msgId, "🎯 <b>Challenge Mode</b>\n10 sawaal aayenge, score banao!\n\nRange chunno:", { reply_markup: rangeKeyboard() });
       u.mode = "challenge_pending";
+      await editMessage(chatId, msgId, "🎯 <b>Challenge Mode</b>\n10 sawaal aayenge, score banao!\n\nKis range se sawaal aayenge?", { reply_markup: rangeKeyboard() });
       return;
     }
+
     if (data === "mode_survival") {
-      await editMessage(chatId, msgId, "❤️ <b>Survival Mode</b>\n3 galtiyon mein game over!\n\nRange chunno:", { reply_markup: rangeKeyboard() });
       u.mode = "survival_pending";
+      await editMessage(chatId, msgId, "❤️ <b>Survival Mode</b>\n3 galtiyon mein game over!\n\nKis range se sawaal aayenge?", { reply_markup: rangeKeyboard() });
       return;
     }
+
     if (data === "mode_speed") {
-      await editMessage(chatId, msgId, "🏃 <b>Speed Round</b>\n5 sawaal, jaldi answer do!\n\nRange chunno:", { reply_markup: rangeKeyboard() });
       u.mode = "speed_pending";
+      await editMessage(chatId, msgId, "🏃 <b>Speed Round</b>\n5 sawaal, jaldi answer do!\n\nKis range se sawaal aayenge?", { reply_markup: rangeKeyboard() });
       return;
     }
+
     if (data === "mode_practice") {
-      const t = `
-📚 <b>Practice Set — All Tables 11-30</b>
+      const t = `📚 <b>Practice Set — All Tables 11-30</b>
 
 Yeh ek structured practice plan hai:
 
@@ -457,20 +451,57 @@ Abhi kahan se shuru karein?`;
       return;
     }
 
+    // RANGE SELECT (for challenge / survival / speed)
+    if (data.startsWith("range_")) {
+      const parts = data.split("_");
+      u.currentRange = [parseInt(parts[1]), parseInt(parts[2])];
+      const pending = u.mode;
+
+      if (pending === "challenge_pending") {
+        u.mode = "challenge";
+        u.challengeTotal = 10;
+        await startChallengeFirst(chatId, msgId, u);
+
+      } else if (pending === "survival_pending") {
+        u.mode = "survival";
+        u.lives = 3;
+        u.survivalScore = 0;
+        const { table, q, ans, opts } = makeQuestion(u);
+        u.quizTable = table; u.quizQ = q; u.quizAns = ans;
+        await editMessage(chatId, msgId,
+          `❤️ <b>SURVIVAL MODE SHURU!</b>\n\n${heart(3)} 3 lives\n🏆 Score: 0\n\n❓ <b>${table} × ${q} = ?</b>`,
+          { reply_markup: quizKeyboard(opts, table, q) });
+
+      } else if (pending === "speed_pending") {
+        u.mode = "speed";
+        u.speedScore = 0;
+        u.speedQ = 1;
+        u.speedTotal = 5;
+        const { table, q, ans, opts } = makeQuestion(u);
+        u.quizTable = table; u.quizQ = q; u.quizAns = ans;
+        await editMessage(chatId, msgId,
+          `🏃 <b>SPEED ROUND SHURU!</b>\n\nSawaal <b>1/5</b>\n\n❓ <b>${table} × ${q} = ?</b>\n\n⚡ Jaldi answer karo!`,
+          { reply_markup: quizKeyboard(opts, table, q) });
+
+      } else {
+        await editMessage(chatId, msgId, welcomeMsg(name), { reply_markup: MAIN_MENU });
+      }
+      return;
+    }
+
+    // LEARN TABLE
     if (data.startsWith("learn_")) {
       const n = data === "learn_random" ? randomInt(11, 30) : parseInt(data.split("_")[1]);
-      const text = `
-📖 <b>Table of ${n}</b>
+      const text = `📖 <b>Table of ${n}</b>
 ━━━━━━━━━━━━━━━━━━━
 <code>${getTable(n)}</code>
 ━━━━━━━━━━━━━━━━━━━
 
-💡 <b>Trick:</b> ${getTrick(n)}
-`;
+💡 <b>Trick:</b> ${getTrick(n)}`;
       await editMessage(chatId, msgId, text, {
         reply_markup: {
           inline_keyboard: [
-            [{ text: `⚡ ${n} ka Quiz`, callback_data: `quiz_${n}` }, { text: "📖 Aur table", callback_data: "mode_learn" }],
+            [{ text: `⚡ Table ${n} ka Quiz`, callback_data: `quiz_${n}` }, { text: "📖 Aur table", callback_data: "mode_learn" }],
             [{ text: "🔙 Menu", callback_data: "menu" }],
           ],
         },
@@ -478,114 +509,200 @@ Abhi kahan se shuru karein?`;
       return;
     }
 
+    // ─── FIX: QUIZ START — specific table fixed rehti hai ───
     if (data.startsWith("quiz_")) {
+      // Parse fixed table number (null agar random)
+      let fixedTable = null;
+      if (data !== "quiz_random") {
+        const parsed = parseInt(data.split("_")[1]);
+        if (!isNaN(parsed) && parsed >= 11 && parsed <= 30) {
+          fixedTable = parsed;
+        }
+      }
+
       u.mode = "quiz";
-      const { table, q, ans, opts } = makeQuestion(u);
-      u.quizTable = table;
-      u.quizQ = q;
-      u.quizAns = ans;
-      const txt = `⚡ <b>QUIZ TIME!</b>\n\n${getLevelEmoji(u.score)} Score: <b>${u.score}</b> | 🔥 Streak: <b>${u.streak}</b>\n\n❓ <b>${table} × ${q} = ?</b>\n\nSahi option chunno:`;
+      u.quizFixedTable = fixedTable; // FIX: store for all subsequent questions
+
+      const { table, q, ans, opts } = makeQuestion(u, fixedTable);
+      u.quizTable = table; u.quizQ = q; u.quizAns = ans;
+
+      const tableLabel = fixedTable
+        ? `Table <b>${fixedTable}</b> ka quiz — sirf isi table ke sawaal!`
+        : `Random quiz — range ${u.currentRange[0]}-${u.currentRange[1]}`;
+
+      const txt = `⚡ <b>QUIZ TIME!</b>
+${tableLabel}
+
+${getLevelEmoji(u.score)} Score: <b>${u.score}</b> | 🔥 Streak: <b>${u.streak}</b>
+
+❓ <b>${table} × ${q} = ?</b>
+
+Sahi option chunno:`;
       await editMessage(chatId, msgId, txt, { reply_markup: quizKeyboard(opts, table, q) });
       return;
     }
 
+    // ─── FIX: SKIP — fixed table use karo ───
+    if (data === "skip_quiz") {
+      u.total++;
+      const { table, q, ans, opts } = makeQuestion(u, u.quizFixedTable);
+      u.quizTable = table; u.quizQ = q; u.quizAns = ans;
+      u.streak = 0;
+      const tableLabel = u.quizFixedTable ? `Table ${u.quizFixedTable}` : "Random";
+      await editMessage(chatId, msgId,
+        `⏭ <b>Skipped!</b> (${tableLabel})\n\n❓ <b>${table} × ${q} = ?</b>`,
+        { reply_markup: quizKeyboard(opts, table, q) });
+      return;
+    }
+
+    // ─────────────────────────────────────────────
+    //  ANSWER HANDLER — FULLY FIXED
+    // ─────────────────────────────────────────────
     if (data.startsWith("ans_")) {
       const parts = data.split("_");
       const chosen = parseInt(parts[1]);
       const table = parseInt(parts[2]);
       const q = parseInt(parts[3]);
       const correct = table * q;
-      u.total++;
+      const isCorrect = chosen === correct;
 
-      if (chosen === correct) {
+      // Update global stats
+      u.total++;
+      if (isCorrect) {
         u.score++;
         u.streak++;
         if (u.streak > u.bestStreak) u.bestStreak = u.streak;
-        const sm = streakMsg(u.streak);
-        const msg = `✅ <b>SAHI JAWAB!</b> 🎉\n\n${table} × ${q} = <b>${correct}</b>\n\n🔥 Streak: <b>${u.streak}</b> ${sm}\n${getLevelEmoji(u.score)} Score: <b>${u.score}</b>\n\nAgle sawaal ke liye:`;
-        const { table: nt, q: nq, ans: na, opts } = makeQuestion(u);
-        u.quizTable = nt; u.quizQ = nq; u.quizAns = na;
-        await editMessage(chatId, msgId, msg + `\n\n❓ <b>${nt} × ${nq} = ?</b>`, { reply_markup: quizKeyboard(opts, nt, nq) });
       } else {
         u.streak = 0;
-        if (u.mode === "survival") {
+      }
+
+      // Result line
+      const resultLine = isCorrect
+        ? `✅ <b>SAHI JAWAB!</b> 🎉  ${table} × ${q} = <b>${correct}</b>`
+        : `❌ <b>GALAT!</b>  ${table} × ${q} = <b>${correct}</b>  |  Tumne: ${chosen}`;
+
+      // ── CHALLENGE MODE ──
+      if (u.mode === "challenge") {
+        if (isCorrect) u.challengeScore++;
+
+        // Check agar yeh last sawaal tha
+        if (u.challengeQ >= u.challengeTotal) {
+          const pct = Math.round((u.challengeScore / u.challengeTotal) * 100);
+          const stars = pct >= 90 ? "⭐⭐⭐" : pct >= 70 ? "⭐⭐" : "⭐";
+          const remark = pct >= 90 ? "🏆 Outstanding!" : pct >= 70 ? "👍 Achha kiya!" : "💪 Aur practice karo!";
+          const endTxt = `🎯 <b>CHALLENGE COMPLETE!</b>
+
+${resultLine}
+
+${stars}
+Score: <b>${u.challengeScore}/${u.challengeTotal}</b>
+Accuracy: <b>${pct}%</b>
+
+${remark}`;
+          u.mode = null;
+          await editMessage(chatId, msgId, endTxt, {
+            reply_markup: { inline_keyboard: [[{ text: "🔄 Phir Khelna", callback_data: "mode_challenge" }, { text: "🏠 Menu", callback_data: "menu" }]] },
+          });
+          return;
+        }
+
+        // Agla sawaal
+        u.challengeQ++;
+        const { table: nt, q: nq, ans: na, opts } = makeQuestion(u);
+        u.quizTable = nt; u.quizQ = nq; u.quizAns = na;
+        const challengeTxt = `${resultLine}
+
+🎯 <b>CHALLENGE</b> — Sawaal <b>${u.challengeQ}/${u.challengeTotal}</b> | ✅ Score: ${u.challengeScore}
+
+❓ <b>${nt} × ${nq} = ?</b>`;
+        await editMessage(chatId, msgId, challengeTxt, { reply_markup: quizKeyboard(opts, nt, nq) });
+        return;
+      }
+
+      // ── SURVIVAL MODE ──
+      if (u.mode === "survival") {
+        if (isCorrect) {
+          u.survivalScore++;
+        } else {
           u.lives--;
           if (u.lives <= 0) {
-            await editMessage(chatId, msgId, `💀 <b>GAME OVER!</b>\n\nSahi jawab tha: <b>${correct}</b>\n\n📊 Final Score: <b>${u.score}</b>\n\nPhir try karo!`, {
+            const endTxt = `${resultLine}
+
+💀 <b>GAME OVER!</b>
+
+🏆 Survival Score: <b>${u.survivalScore}</b>
+
+Phir try karo! 💪`;
+            u.mode = null;
+            u.lives = 3;
+            await editMessage(chatId, msgId, endTxt, {
               reply_markup: { inline_keyboard: [[{ text: "🔄 Play Again", callback_data: "mode_survival" }, { text: "🏠 Menu", callback_data: "menu" }]] },
             });
-            u.mode = null; u.lives = 3;
             return;
           }
         }
-        // Challenge mode score tracking
-        if (u.mode === "challenge") {
-          const { table: nt, q: nq, ans: na, opts } = makeQuestion(u);
-          u.quizTable = nt; u.quizQ = nq; u.quizAns = na;
-          const msg = `❌ <b>GALAT!</b>\n\n${table} × ${q} = <b>${correct}</b>\n\nTumne chuna: ${chosen}\n\n🔥 Streak toot gayi!\n\nAgle sawaal:`;
-          await editMessage(chatId, msgId, msg + `\n\n❓ <b>${nt} × ${nq} = ?</b>`, { reply_markup: quizKeyboard(opts, nt, nq) });
-          u.challengeQ++;
-          if (u.challengeQ > u.challengeTotal) {
-            await startChallengeQ(chatId, msgId, u);
-          }
-          return;
-        }
-        const msg = `❌ <b>GALAT!</b>\n\n${table} × ${q} = <b>${correct}</b>\n\nTumne chuna: ${chosen}\n${u.mode === "survival" ? `\n${heart(u.lives)} Lives bachi\n` : ""}\n🔥 Streak toot gayi!\n\nAgle sawaal:`;
         const { table: nt, q: nq, ans: na, opts } = makeQuestion(u);
         u.quizTable = nt; u.quizQ = nq; u.quizAns = na;
-        await editMessage(chatId, msgId, msg + `\n\n❓ <b>${nt} × ${nq} = ?</b>`, { reply_markup: quizKeyboard(opts, nt, nq) });
+        const survivalTxt = `${resultLine}
+
+${heart(u.lives)} Lives bachi | 🏆 Score: <b>${u.survivalScore}</b>
+
+❓ <b>${nt} × ${nq} = ?</b>`;
+        await editMessage(chatId, msgId, survivalTxt, { reply_markup: quizKeyboard(opts, nt, nq) });
+        return;
       }
-      return;
-    }
 
-    if (data === "start_challenge") {
-      u.mode = "challenge";
-      u.challengeScore = 0;
-      u.challengeQ = 0;
-      u.challengeTotal = 10;
-      await startChallengeQ(chatId, msgId, u);
-      return;
-    }
+      // ── SPEED ROUND ──
+      if (u.mode === "speed") {
+        if (isCorrect) u.speedScore++;
 
-    if (data === "start_survival") {
-      u.mode = "survival";
-      u.lives = 3;
-      u.score = 0;
-      const { table, q, ans, opts } = makeQuestion(u);
-      u.quizTable = table; u.quizQ = q; u.quizAns = ans;
-      const txt = `❤️ <b>SURVIVAL MODE</b>\n\n${heart(3)} 3 lives\n\n❓ <b>${table} × ${q} = ?</b>`;
-      await editMessage(chatId, msgId, txt, { reply_markup: quizKeyboard(opts, table, q) });
-      return;
-    }
+        // Check agar last sawaal tha
+        if (u.speedQ >= u.speedTotal) {
+          const pct = Math.round((u.speedScore / u.speedTotal) * 100);
+          const remark = pct === 100 ? "⚡ PERFECT SPEED!" : pct >= 80 ? "🔥 Excellent!" : pct >= 60 ? "👍 Achha!" : "💪 Aur karo!";
+          const endTxt = `${resultLine}
 
-    if (data === "skip_quiz") {
-      const { table, q, ans, opts } = makeQuestion(u);
-      u.quizTable = table; u.quizQ = q; u.quizAns = ans;
-      await editMessage(chatId, msgId, `⏭ <b>Skipped!</b>\n\n❓ <b>${table} × ${q} = ?</b>`, { reply_markup: quizKeyboard(opts, table, q) });
-      return;
-    }
+🏃 <b>SPEED ROUND COMPLETE!</b>
 
-    if (data.startsWith("range_")) {
-      const parts = data.split("_");
-      u.currentRange = [parseInt(parts[1]), parseInt(parts[2])];
-      const pending = u.mode;
-      if (pending === "challenge_pending") {
-        u.mode = "challenge";
-        u.challengeScore = 0; u.challengeQ = 0; u.challengeTotal = 10;
-        await startChallengeQ(chatId, msgId, u);
-      } else if (pending === "survival_pending") {
-        u.mode = "survival"; u.lives = 3;
-        const { table, q, ans, opts } = makeQuestion(u);
-        u.quizTable = table; u.quizQ = q; u.quizAns = ans;
-        await editMessage(chatId, msgId, `❤️ <b>SURVIVAL MODE</b>\n\n${heart(3)} 3 lives\n\n❓ <b>${table} × ${q} = ?</b>`, { reply_markup: quizKeyboard(opts, table, q) });
-      } else if (pending === "speed_pending") {
-        u.mode = "speed"; u.speedScore = 0; u.speedQ = 0; u.speedTotal = 5;
-        const { table, q, ans, opts } = makeQuestion(u);
-        u.quizTable = table; u.quizQ = q; u.quizAns = ans;
-        await editMessage(chatId, msgId, `🏃 <b>SPEED ROUND!</b>\n\nSawaal 1/5\n\n❓ <b>${table} × ${q} = ?</b>\n\n⚡ Jaldi answer karo!`, { reply_markup: quizKeyboard(opts, table, q) });
-      } else {
-        await editMessage(chatId, msgId, welcomeMsg(name), { reply_markup: MAIN_MENU });
+Score: <b>${u.speedScore}/${u.speedTotal}</b>
+Accuracy: <b>${pct}%</b>
+
+${remark}`;
+          u.mode = null;
+          await editMessage(chatId, msgId, endTxt, {
+            reply_markup: { inline_keyboard: [[{ text: "🔄 Phir Khelna", callback_data: "mode_speed" }, { text: "🏠 Menu", callback_data: "menu" }]] },
+          });
+          return;
+        }
+
+        // Agla sawaal
+        u.speedQ++;
+        const { table: nt, q: nq, ans: na, opts } = makeQuestion(u);
+        u.quizTable = nt; u.quizQ = nq; u.quizAns = na;
+        const speedTxt = `${resultLine}
+
+🏃 Sawaal <b>${u.speedQ}/${u.speedTotal}</b> | ✅ Score: ${u.speedScore}
+
+❓ <b>${nt} × ${nq} = ?</b>
+
+⚡ Jaldi!`;
+        await editMessage(chatId, msgId, speedTxt, { reply_markup: quizKeyboard(opts, nt, nq) });
+        return;
       }
+
+      // ── QUIZ MODE (default) — FIX: quizFixedTable use hoga ──
+      const sm = isCorrect ? streakMsg(u.streak) : "";
+      const streakInfo = isCorrect
+        ? `🔥 Streak: <b>${u.streak}</b>${sm ? " " + sm : ""}\n${getLevelEmoji(u.score)} Score: <b>${u.score}</b>`
+        : `🔥 Streak toot gayi!`;
+      const { table: nt, q: nq, ans: na, opts } = makeQuestion(u, u.quizFixedTable);
+      u.quizTable = nt; u.quizQ = nq; u.quizAns = na;
+      const tableLabel = u.quizFixedTable ? `Table <b>${u.quizFixedTable}</b>` : "Random";
+      const quizTxt = `${resultLine}
+${streakInfo}
+
+❓ <b>${nt} × ${nq} = ?</b>  (${tableLabel})`;
+      await editMessage(chatId, msgId, quizTxt, { reply_markup: quizKeyboard(opts, nt, nq) });
       return;
     }
 
@@ -617,27 +734,29 @@ Abhi kahan se shuru karein?`;
 
     if (text === "/reset") {
       users[chatId] = null;
-      await sendMessage(chatId, "✅ Progress reset ho gayi! /start karo.", { reply_markup: MAIN_MENU });
+      await sendMessage(chatId, "✅ Teri progress reset ho gayi!\n\nFresh start ke liye /start karo.", {
+        reply_markup: { inline_keyboard: [[{ text: "🏠 Menu", callback_data: "menu" }]] },
+      });
       return;
     }
 
     if (text === "/quiz") {
-      await sendMessage(chatId, "⚡ <b>Konsi table ka quiz?</b>", { reply_markup: tableSelectKeyboard("quiz") });
+      await sendMessage(chatId, "⚡ <b>Konsi table ka quiz?</b>\n\nEk specific table chunne par sirf usi table ke sawaal aayenge!", { reply_markup: tableSelectKeyboard("quiz") });
       return;
     }
 
     if (text.startsWith("/table")) {
       const n = parseInt(text.split(" ")[1]);
       if (n >= 11 && n <= 30) {
-        await sendMessage(chatId, `📖 <b>Table of ${n}</b>\n\n<code>${getTable(n)}</code>\n\n💡 ${getTrick(n)}`, {
+        await sendMessage(chatId, `📖 <b>Table of ${n}</b>\n\n<code>${getTable(n)}</code>\n\n💡 <b>Trick:</b> ${getTrick(n)}`, {
           reply_markup: {
             inline_keyboard: [
-              [{ text: `⚡ ${n} ka Quiz`, callback_data: `quiz_${n}` }, { text: "🔙 Menu", callback_data: "menu" }],
+              [{ text: `⚡ Table ${n} ka Quiz`, callback_data: `quiz_${n}` }, { text: "🔙 Menu", callback_data: "menu" }],
             ],
           },
         });
       } else {
-        await sendMessage(chatId, "❌ 11 se 30 ke beech number do!\nExample: /table 17", { reply_markup: MAIN_MENU });
+        await sendMessage(chatId, "❌ 11 se 30 ke beech number do!\nExample: <code>/table 17</code>", { reply_markup: MAIN_MENU });
       }
       return;
     }
@@ -659,7 +778,7 @@ app.post(`/webhook/${BOT_TOKEN}`, async (req, res) => {
   try {
     await handleUpdate(req.body);
   } catch (err) {
-    console.error("Update error:", err);
+    console.error("Update error:", err.message);
   }
 });
 
